@@ -1,17 +1,70 @@
 import React, { useEffect, useState, useContext } from "react";
-import { BrowserRouter as Router, NavLink, Route, Routes, Navigate } from "react-router-dom";
-import api from "./api";
+import { HashRouter as Router, NavLink, Route, Routes, Navigate } from "react-router-dom";
 import { AuthContext, AuthProvider } from "./auth/AuthContext";
 import Login from "./auth/Login";
 import Register from "./auth/Register";
+
+const STORAGE_KEYS = {
+  books: "library_books",
+  members: "library_members",
+  transactions: "library_transactions",
+};
+
+const defaultBooks = [
+  { id: "book-1", title: "The Hobbit", author: "J.R.R. Tolkien", category: "Fantasy", isbn: "9780007118359", quantity: 3, availableQuantity: 3 },
+  { id: "book-2", title: "1984", author: "George Orwell", category: "Dystopia", isbn: "9780451524935", quantity: 5, availableQuantity: 5 },
+];
+
+const defaultMembers = [
+  { id: "member-1", name: "Alice Johnson", email: "alice@example.com", phone: "1234567890", membershipDate: "2025-01-10" },
+  { id: "member-2", name: "Bob Smith", email: "bob@example.com", phone: "9876543210", membershipDate: "2025-01-15" },
+];
+
+const defaultTransactions = [
+  { id: "txn-1", bookId: "book-1", memberId: "member-1", issueDate: "2026-09-01", returnDate: null, status: "Issued" },
+];
+
+function readStorage(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function writeStorage(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function ensureDemoData() {
+  if (!localStorage.getItem(STORAGE_KEYS.books)) {
+    writeStorage(STORAGE_KEYS.books, defaultBooks);
+  }
+  if (!localStorage.getItem(STORAGE_KEYS.members)) {
+    writeStorage(STORAGE_KEYS.members, defaultMembers);
+  }
+  if (!localStorage.getItem(STORAGE_KEYS.transactions)) {
+    writeStorage(STORAGE_KEYS.transactions, defaultTransactions);
+  }
+}
 
 function Dashboard() {
   const [stats, setStats] = useState({ totalBooks: 0, totalMembers: 0, issuedBooks: 0, returnedBooks: 0 });
 
   useEffect(() => {
-    api.get("/transactions/stats").then((res) => setStats(res.data)).catch(() => {});
-    api.get("/books").then((res) => setStats((prev) => ({ ...prev, totalBooks: res.data.length }))).catch(() => {});
-    api.get("/members").then((res) => setStats((prev) => ({ ...prev, totalMembers: res.data.length }))).catch(() => {});
+    ensureDemoData();
+
+    const books = readStorage(STORAGE_KEYS.books, []);
+    const members = readStorage(STORAGE_KEYS.members, []);
+    const transactions = readStorage(STORAGE_KEYS.transactions, []);
+
+    setStats({
+      totalBooks: books.length,
+      totalMembers: members.length,
+      issuedBooks: transactions.filter((item) => item.status === "Issued").length,
+      returnedBooks: transactions.filter((item) => item.status === "Returned").length,
+    });
   }, []);
 
   return (
@@ -34,10 +87,11 @@ function BooksPage() {
   const [editingId, setEditingId] = useState("");
 
   const fetchBooks = () => {
-    api.get("/books").then((res) => setBooks(res.data)).catch((err) => console.error(err));
+    setBooks(readStorage(STORAGE_KEYS.books, []));
   };
 
   useEffect(() => {
+    ensureDemoData();
     fetchBooks();
   }, []);
 
@@ -45,23 +99,26 @@ function BooksPage() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const payload = { ...form, quantity: Number(form.quantity) };
+    const payload = { ...form, quantity: Number(form.quantity), availableQuantity: Number(form.quantity) };
+    const currentBooks = readStorage(STORAGE_KEYS.books, []);
 
-    const request = editingId
-      ? api.put(`/books/${editingId}`, payload)
-      : api.post("/books", payload);
+    if (editingId) {
+      const updatedBooks = currentBooks.map((book) =>
+        book.id === editingId ? { ...book, ...payload } : book
+      );
+      writeStorage(STORAGE_KEYS.books, updatedBooks);
+    } else {
+      const newBook = { id: `book-${Date.now()}`, ...payload };
+      writeStorage(STORAGE_KEYS.books, [...currentBooks, newBook]);
+    }
 
-    request
-      .then(() => {
-        setForm(emptyForm);
-        setEditingId("");
-        fetchBooks();
-      })
-      .catch((err) => alert(err.response?.data?.message || "Unable to save book"));
+    setForm(emptyForm);
+    setEditingId("");
+    fetchBooks();
   };
 
   const handleEdit = (book) => {
-    setEditingId(book._id);
+    setEditingId(book.id);
     setForm({
       title: book.title,
       author: book.author,
@@ -72,7 +129,9 @@ function BooksPage() {
   };
 
   const handleDelete = (id) => {
-    api.delete(`/books/${id}`).then(() => fetchBooks()).catch((err) => alert(err.response?.data?.message || "Unable to delete book"));
+    const remainingBooks = readStorage(STORAGE_KEYS.books, []).filter((book) => book.id !== id);
+    writeStorage(STORAGE_KEYS.books, remainingBooks);
+    fetchBooks();
   };
 
   return (
@@ -111,7 +170,7 @@ function BooksPage() {
           </thead>
           <tbody>
             {books.map((book) => (
-              <tr key={book._id}>
+              <tr key={book.id}>
                 <td>{book.title}</td>
                 <td>{book.author}</td>
                 <td>{book.category}</td>
@@ -120,7 +179,7 @@ function BooksPage() {
                 <td>{book.availableQuantity}</td>
                 <td className="action-cell">
                   <button type="button" onClick={() => handleEdit(book)}>Edit</button>
-                  <button type="button" className="danger" onClick={() => handleDelete(book._id)}>Delete</button>
+                  <button type="button" className="danger" onClick={() => handleDelete(book.id)}>Delete</button>
                 </td>
               </tr>
             ))}
@@ -138,10 +197,11 @@ function MembersPage() {
   const [editingId, setEditingId] = useState("");
 
   const fetchMembers = () => {
-    api.get("/members").then((res) => setMembers(res.data)).catch((err) => console.error(err));
+    setMembers(readStorage(STORAGE_KEYS.members, []));
   };
 
   useEffect(() => {
+    ensureDemoData();
     fetchMembers();
   }, []);
 
@@ -149,24 +209,33 @@ function MembersPage() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const request = editingId ? api.put(`/members/${editingId}`, form) : api.post("/members", form);
+    const currentMembers = readStorage(STORAGE_KEYS.members, []);
+    const payload = { ...form, membershipDate: new Date().toISOString().slice(0, 10) };
 
-    request
-      .then(() => {
-        setForm(emptyForm);
-        setEditingId("");
-        fetchMembers();
-      })
-      .catch((err) => alert(err.response?.data?.message || "Unable to save member"));
+    if (editingId) {
+      const updatedMembers = currentMembers.map((member) =>
+        member.id === editingId ? { ...member, ...payload } : member
+      );
+      writeStorage(STORAGE_KEYS.members, updatedMembers);
+    } else {
+      const newMember = { id: `member-${Date.now()}`, ...payload };
+      writeStorage(STORAGE_KEYS.members, [...currentMembers, newMember]);
+    }
+
+    setForm(emptyForm);
+    setEditingId("");
+    fetchMembers();
   };
 
   const handleEdit = (member) => {
-    setEditingId(member._id);
+    setEditingId(member.id);
     setForm({ name: member.name, email: member.email, phone: member.phone });
   };
 
   const handleDelete = (id) => {
-    api.delete(`/members/${id}`).then(() => fetchMembers()).catch((err) => alert(err.response?.data?.message || "Unable to delete member"));
+    const remainingMembers = readStorage(STORAGE_KEYS.members, []).filter((member) => member.id !== id);
+    writeStorage(STORAGE_KEYS.members, remainingMembers);
+    fetchMembers();
   };
 
   return (
@@ -201,14 +270,14 @@ function MembersPage() {
           </thead>
           <tbody>
             {members.map((member) => (
-              <tr key={member._id}>
+              <tr key={member.id}>
                 <td>{member.name}</td>
                 <td>{member.email}</td>
                 <td>{member.phone}</td>
-                <td>{new Date(member.membershipDate).toLocaleDateString()}</td>
+                <td>{member.membershipDate}</td>
                 <td className="action-cell">
                   <button type="button" onClick={() => handleEdit(member)}>Edit</button>
-                  <button type="button" className="danger" onClick={() => handleDelete(member._id)}>Delete</button>
+                  <button type="button" className="danger" onClick={() => handleDelete(member.id)}>Delete</button>
                 </td>
               </tr>
             ))}
@@ -226,29 +295,61 @@ function TransactionsPage() {
   const [issueForm, setIssueForm] = useState({ memberId: "", bookId: "" });
 
   const fetchData = () => {
-    api.get("/books").then((res) => setBooks(res.data));
-    api.get("/members").then((res) => setMembers(res.data));
-    api.get("/transactions").then((res) => setTransactions(res.data));
+    setBooks(readStorage(STORAGE_KEYS.books, []));
+    setMembers(readStorage(STORAGE_KEYS.members, []));
+    setTransactions(readStorage(STORAGE_KEYS.transactions, []));
   };
 
   useEffect(() => {
+    ensureDemoData();
     fetchData();
   }, []);
 
   const handleIssue = (e) => {
     e.preventDefault();
-    api.post("/transactions/issue", issueForm)
-      .then(() => {
-        setIssueForm({ memberId: "", bookId: "" });
-        fetchData();
-      })
-      .catch((err) => alert(err.response?.data?.message || "Unable to issue book"));
+    const booksList = readStorage(STORAGE_KEYS.books, []);
+    const selectedBook = booksList.find((book) => book.id === issueForm.bookId);
+    if (!selectedBook || selectedBook.availableQuantity <= 0) {
+      alert("Selected book is unavailable");
+      return;
+    }
+
+    const updatedBooks = booksList.map((book) =>
+      book.id === issueForm.bookId ? { ...book, availableQuantity: book.availableQuantity - 1 } : book
+    );
+    writeStorage(STORAGE_KEYS.books, updatedBooks);
+
+    const allTransactions = readStorage(STORAGE_KEYS.transactions, []);
+    const newTransaction = {
+      id: `txn-${Date.now()}`,
+      bookId: issueForm.bookId,
+      memberId: issueForm.memberId,
+      issueDate: new Date().toISOString().slice(0, 10),
+      returnDate: null,
+      status: "Issued",
+    };
+
+    writeStorage(STORAGE_KEYS.transactions, [...allTransactions, newTransaction]);
+    setIssueForm({ memberId: "", bookId: "" });
+    fetchData();
   };
 
   const handleReturn = (id) => {
-    api.put(`/transactions/${id}/return`)
-      .then(() => fetchData())
-      .catch((err) => alert(err.response?.data?.message || "Unable to return book"));
+    const transactionsList = readStorage(STORAGE_KEYS.transactions, []);
+    const targetTransaction = transactionsList.find((txn) => txn.id === id);
+    if (!targetTransaction) return;
+
+    const updatedTransactions = transactionsList.map((txn) =>
+      txn.id === id ? { ...txn, returnDate: new Date().toISOString().slice(0, 10), status: "Returned" } : txn
+    );
+    writeStorage(STORAGE_KEYS.transactions, updatedTransactions);
+
+    const booksList = readStorage(STORAGE_KEYS.books, []);
+    const updatedBooks = booksList.map((book) =>
+      book.id === targetTransaction.bookId ? { ...book, availableQuantity: book.availableQuantity + 1 } : book
+    );
+    writeStorage(STORAGE_KEYS.books, updatedBooks);
+    fetchData();
   };
 
   return (
@@ -260,13 +361,13 @@ function TransactionsPage() {
           <select name="memberId" value={issueForm.memberId} onChange={(e) => setIssueForm({ ...issueForm, memberId: e.target.value })} required>
             <option value="">Select Member</option>
             {members.map((member) => (
-              <option key={member._id} value={member._id}>{member.name}</option>
+              <option key={member.id} value={member.id}>{member.name}</option>
             ))}
           </select>
           <select name="bookId" value={issueForm.bookId} onChange={(e) => setIssueForm({ ...issueForm, bookId: e.target.value })} required>
             <option value="">Select Book</option>
             {books.filter((book) => book.availableQuantity > 0).map((book) => (
-              <option key={book._id} value={book._id}>{book.title}</option>
+              <option key={book.id} value={book.id}>{book.title}</option>
             ))}
           </select>
         </div>
@@ -288,15 +389,15 @@ function TransactionsPage() {
           </thead>
           <tbody>
             {transactions.map((transaction) => (
-              <tr key={transaction._id}>
-                <td>{transaction.bookId?.title || "-"}</td>
-                <td>{transaction.memberId?.name || "-"}</td>
-                <td>{new Date(transaction.issueDate).toLocaleDateString()}</td>
-                <td>{transaction.returnDate ? new Date(transaction.returnDate).toLocaleDateString() : "-"}</td>
+              <tr key={transaction.id}>
+                <td>{books.find((book) => book.id === transaction.bookId)?.title || "-"}</td>
+                <td>{members.find((member) => member.id === transaction.memberId)?.name || "-"}</td>
+                <td>{transaction.issueDate}</td>
+                <td>{transaction.returnDate || "-"}</td>
                 <td>{transaction.status}</td>
                 <td>
                   {transaction.status === "Issued" ? (
-                    <button onClick={() => handleReturn(transaction._id)}>Return</button>
+                    <button onClick={() => handleReturn(transaction.id)}>Return</button>
                   ) : (
                     <span>Completed</span>
                   )}
